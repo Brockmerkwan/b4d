@@ -1,0 +1,11 @@
+*.log
+*.tgz
+*.tar.gz
+*.zip
+*.swp
+.DS_Store
+.env
+.vscode/
+.idea/
+__pycache__/
+b4d/
