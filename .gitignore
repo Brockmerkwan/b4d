@@ -1,11 +1,35 @@
-*.log
-*.tgz
-*.tar.gz
-*.zip
-*.swp
-.DS_Store
+# Secrets
 .env
+.env.local
+*.pem
+*.key
+id_*
+
+# Runtime
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venvs/
+
+# Models & Data (large files)
+models/
+*.gguf
+*.bin
+*.safetensors
+checkpoints/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
 .vscode/
 .idea/
-__pycache__/
-b4d/
+*.swp
+*.swo

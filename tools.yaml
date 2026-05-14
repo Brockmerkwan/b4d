@@ -1,0 +1,16 @@
+version: 1
+log_dir: "~/.local/state/b4d/tools"
+timeout_sec: 30
+
+tools:
+  shell:
+    enabled: true
+    allow_cmds: ["ls","cat","sed","awk","grep","rg","find","git","curl","uname","df","du","ps"]
+    deny_patterns: ["\\brm\\b","\\bdd\\b","\\bmkfs\\b","\\bshutdown\\b","\\breboot\\b"]
+    workdir_default: "~/b4d"
+
+  web:
+    enabled: false
+    provider: "tavily"
+    api_key_env: "TAVILY_API_KEY"
+    max_results: 8

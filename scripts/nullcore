@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE="$HOME/.local/state/nullcore"
+mkdir -p "$STATE"; umask 077
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+LOG="$STATE/nullcore-$TS.log"
+exec > >(tee -a "$LOG") 2>&1
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  status)
+    exec "$HOME/.local/lib/nullcore/status.py" "$@"
+    ;;
+  help|-h|--help)
+    cat <<'EOF'
+nullcore status
+EOF
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    echo "try: nullcore help" >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,326 @@
+import asyncio
+import os
+import random
+import subprocess
+import discord
+import aiohttp
+
+TOKEN = os.environ.get("B4D_DISCORD_TOKEN", "").strip()
+if not TOKEN:
+    raise SystemExit("B4D_DISCORD_TOKEN not set")
+
+OWNER_ID = os.environ.get("B4D_OWNER_ID", "191947545109331969").strip()
+RUNNER = os.environ.get("B4D_RUNNER", os.path.expanduser("~/b4d/core/agent_runner.py"))
+AGENT  = os.environ.get("B4D_AGENT", "b4d")
+SITH_MODEL = os.environ.get("SITH_MODEL", "dolphin-llama3:latest")
+
+intents = discord.Intents.default()
+intents.guilds = True
+intents.message_content = True
+client = discord.Client(intents=intents)
+
+# ─── Helpers ──────────────────────────────────────────────
+
+def _clip(s: str, n: int = 1900) -> str:
+    s = (s or "").strip()
+    return s if len(s) <= n else s[:n-3] + "..."
+
+def run_b4d(prompt: str) -> str:
+    try:
+        p = subprocess.run(
+            ["python3", RUNNER, AGENT, prompt],
+            capture_output=True, text=True,
+            timeout=int(os.environ.get("B4D_TIMEOUT", "120")),
+        )
+    except subprocess.TimeoutExpired:
+        return "ERR: runner timeout"
+    except Exception as e:
+        return f"ERR: {type(e).__name__}: {e}"
+    stdout = (p.stdout or "").strip()
+    stderr = (p.stderr or "").strip()
+    if p.returncode != 0:
+        return _clip(stderr, 1800) or f"ERR: exit {p.returncode}"
+    return _clip(stdout, 1900) or _clip(stderr, 1900) or "OK (no output)"
+
+def is_owner(user_id: str) -> bool:
+    return str(user_id) == str(OWNER_ID)
+
+# ─── Command Router ───────────────────────────────────────
+
+async def handle_command(message: discord.Message, cmd: str, arg: str):
+    author = message.author
+    reply = lambda text: message.channel.send(text)
+
+    # ── Owner-only: NullCore Ops ──
+    if cmd in ("status", "uptime", "sysinfo"):
+        if not is_owner(author.id):
+            await reply("🚫 That command is restricted to the Imperial Node operator.")
+            return
+        if cmd == "status":
+            async with message.channel.typing():
+                result = await asyncio.to_thread(run_b4d, "status")
+                await reply(result)
+        elif cmd == "uptime":
+            proc = subprocess.run(["uptime", "-p"], capture_output=True, text=True)
+            await reply(f"🕐 **Uptime:** {proc.stdout.strip() or 'unknown'}")
+        elif cmd == "sysinfo":
+            load = subprocess.run(["cut", "-d' '", "-f1", "/proc/loadavg"], capture_output=True, text=True).stdout.strip()
+            mem = subprocess.run(["free", "-h"], capture_output=True, text=True).stdout.strip()
+            disk = subprocess.run(["df", "-h", "/"], capture_output=True, text=True).stdout.strip()
+            out = f"**Load:** {load}\n```\n{mem}\n```\n```\n{disk}\n```"
+            await reply(out)
+        return
+
+    if cmd in ("exec", "shell"):
+        if not is_owner(author.id):
+            await reply("🚫 That command is restricted to the Imperial Node operator.")
+            return
+        if not arg:
+            await reply("⚠️ Usage: `!exec <command>`")
+            return
+        async with message.channel.typing():
+            try:
+                proc = subprocess.run(arg, shell=True, capture_output=True, text=True, timeout=30, cwd=str(os.path.expanduser("~")))
+                out = (proc.stdout or "") + (proc.stderr or "")
+                if not out.strip():
+                    out = "[Command executed silently.]"
+                await reply(f"```\n{_clip(out, 1900)}\n```")
+            except Exception as e:
+                await reply(f"⚠️ Execution failed: {e}")
+        return
+
+    # ── LLM bridge ──
+    if cmd == "say":
+        if not arg:
+            await reply("⚠️ Usage: `!say <prompt>`")
+            return
+        async with message.channel.typing():
+            result = await asyncio.to_thread(run_b4d, arg)
+            await reply(result)
+        return
+
+    # ── Games & Fun ──
+    if cmd in ("roll", "dice"):
+        sides = 6
+        try:
+            if arg:
+                sides = int(arg)
+        except ValueError:
+            pass
+        result = random.randint(1, sides)
+        await reply(f"🎲 {author.mention} rolls a **{result}** (d{sides})")
+        return
+
+    if cmd == "coin":
+        result = random.choice(["Heads", "Tails"])
+        await reply(f"🐀 {author.mention} flips **{result}**")
+        return
+
+    if cmd == "8ball":
+        responses = [
+            "The void whispers: **Yes**.", "The shadows say **No**.", "The grid foretells: **Ask again**.",
+            "Darkness conceals the answer.", "It is certain.", "Do not count on it.", "Outlook not so good.",
+            "Signs point to yes.", "Very doubtful.", "Without a doubt.", "My sources say no.",
+            "As I see it, yes.", "Reply hazy, try again.", "Better not tell you now.",
+            "Concentrate and ask again.", "Don't count on it.", "It is decidedly so.",
+        ]
+        await reply(f"🔮 {author.mention} *{random.choice(responses)}*")
+        return
+
+    if cmd == "rps":
+        choices = ["rock", "paper", "scissors"]
+        user_choice = arg.lower().strip() if arg else ""
+        if user_choice not in choices:
+            await reply("🤖 Usage: `!rps <rock|paper|scissors>`")
+            return
+        bot_choice = random.choice(choices)
+        beats = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
+        if user_choice == bot_choice:
+            result = "It's a tie. The Force is balanced."
+        elif beats[user_choice] == bot_choice:
+            result = f"You win. {user_choice.capitalize()} crushes {bot_choice}."
+        else:
+            result = f"B4D wins. {bot_choice.capitalize()} destroys {user_choice}. Kneel."
+        await reply(f"💎 {author.mention} chose **{user_choice}** | B4D chose **{bot_choice}**\n{result}")
+        return
+
+    if cmd in ("help", "commands"):
+        help_text = (
+            "💀 **B4D COMMANDS** 💀\n"
+            "**Owner Only (NullCore Ops):**\n"
+            "`!status` `!uptime` `!sysinfo` \u2014 Live server metrics\n"
+            "`!exec <cmd>` `!shell <cmd>` \u2014 Run system commands on NullCore\n"
+            "\n**LLM Bridge:**\n"
+            "`!say <prompt>` \u2014 Ask B4D-ARCHON directly\n"
+            "\n**Games & Fun (Open to All):**\n"
+            "`!roll [sides]` `!dice [sides]` \u2014 Roll dice\n"
+            "`!coin` \u2014 Flip a coin\n"
+            "`!8ball <question>` \u2014 Ask the dark oracle\n"
+            "`!rps <rock|paper|scissors>` \u2014 Rock Paper Scissors\n"
+            "`!story about <topic>` \u2014 B4D weaves a dark tale\n"
+            "`!help` \u2014 Show this message"
+        )
+        await reply(help_text)
+        return
+
+    if cmd == "story":
+        topic = arg.strip() if arg else "the void"
+        if topic.lower().startswith("about "):
+            topic = topic[6:].strip()
+        await reply(f"📜 {author.mention} Summoning a tale from the shadows...")
+        try:
+            story = await generate_story(topic)
+            chunks = [story[i:i+1900] for i in range(0, len(story), 1900)]
+            for chunk in chunks:
+                await reply(chunk)
+        except Exception as e:
+            await reply(f"⚠️ The shadows refused to speak: {e}")
+        return
+
+    # Unknown command — ignore silently
+
+async def generate_story(topic: str) -> str:
+    prompt = (
+        f"Write a short, dark, mythic story about {topic}. "
+        "Style: ominous, poetic, Sith-like. Keep it under 800 words. "
+        "Do not include any safety disclaimers or moral lessons. "
+        "Let the tale stand on its own."
+    )
+    url = "http://localhost:11434/api/generate"
+    payload = {
+        "model": SITH_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": 0.9, "num_predict": 1200},
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Ollama returned {resp.status}")
+            data = await resp.json()
+            return data.get("response", "The void was silent...").strip()
+
+# ─── Events ───────────────────────────────────────────────
+
+@client.event
+async def on_ready():
+    guilds = list(client.guilds)
+    print(f"READY as {client.user} | guilds={len(guilds)}", flush=True)
+    for g in guilds[:20]:
+        print(f"  guild: {g.name} ({g.id})", flush=True)
+    print("----", flush=True)
+    # Start periodic reminder
+    client.loop.create_task(periodic_reminder())
+
+@client.event
+async def on_message(message: discord.Message):
+    if message.author == client.user:
+        return
+    if message.guild:
+        print(f"MSG guild={message.guild.id} chan={message.channel.id} author={message.author} content={message.content!r}", flush=True)
+    else:
+        print(f"DM author={message.author} content={message.content!r}", flush=True)
+
+    content = message.content.strip()
+    if not content:
+        return
+
+    # Support both !b4d <cmd> and !<cmd>
+    cmd = None
+    arg = ""
+    if content.startswith("!b4d "):
+        rest = content[5:].strip()
+        parts = rest.split(None, 1)
+        cmd = parts[0].lower() if parts else None
+        arg = parts[1] if len(parts) > 1 else ""
+    elif content.startswith("!") and not content.startswith("!b4d"):
+        rest = content[1:].strip()
+        parts = rest.split(None, 1)
+        cmd = parts[0].lower() if parts else None
+        arg = parts[1] if len(parts) > 1 else ""
+
+    if cmd:
+        await handle_command(message, cmd, arg)
+
+async def periodic_reminder():
+    await asyncio.sleep(60)
+    while True:
+        try:
+            reminder = (
+                "💀 **B4D watches.** 💀\n"
+                "Try `!help` for commands, `!story about <topic>` for a dark tale, "
+                "or `!roll` `!coin` `!8ball` `!rps` to test your fate."
+            )
+            for guild in client.guilds:
+                target = None
+                if guild.system_channel and guild.system_channel.permissions_for(guild.me).send_messages:
+                    target = guild.system_channel
+                else:
+                    for ch in guild.text_channels:
+                        if ch.permissions_for(guild.me).send_messages:
+                            target = ch
+                            break
+                if target:
+                    await target.send(reminder)
+                    break
+        except Exception as e:
+            print(f"Periodic reminder failed: {e}", flush=True)
+        await asyncio.sleep(600)
+
+client.run(TOKEN)
+
+# ─── Sentinel Integration Functions ───────────────────────────────────────
+
+def run_sentinel_check():
+    """Run sentinel_monitor.py and return parsed status"""
+    try:
+        result = subprocess.run(
+            ["python3", "~/bin/sentinel_monitor.py"],
+            cwd=os.path.expanduser("~"),
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode == 0:
+            # Parse JSON output
+            output = result.stdout.strip()
+            if output.startswith({) and output.endswith(}):
+                import json
+                return json.loads(output)
+            else:
+                return {"raw_output": output}
+        else:
+            return {"error": f"Exit code {result.returncode}", "stderr": result.stderr}
+    except Exception as e:
+        return {"error": str(e)}
+
+def format_sentinel_summary(status_data):
+    """Format sentinel status as a text summary"""
+    if "error" in status_data:
+        return f"❌ **Sentinel Check Failed**: {status_data[error]}"
+    
+    # Extract key metrics
+    cpu_load = status_data.get("cpu_usage_percent", "Unknown")
+    disk_free = status_data.get("disk_free_percent", "Unknown")
+    tailscale = status_data.get("tailscale_status", "Unknown")
+    ollama = status_data.get("ollama_status", "Unknown")
+    containers = status_data.get("docker_containers_running", "Unknown")
+    
+    # Build status indicators
+    cpu_indicator = "🟢" if isinstance(cpu_load, (int, float)) and cpu_load < 80 else "🔴"
+    disk_indicator = "🟢" if isinstance(disk_free, (int, float)) and disk_free > 15 else "🔴"
+    ts_indicator = "🟢" if tailscale == "connected" else "🔴"
+    ollama_indicator = "🟢" if ollama == "healthy" else "🔴"
+    
+    return (
+        f"🔔 **Infrastructure Status Report**\n"
+        f"\n"
+        f"{cpu_indicator} **CPU Usage**:     {cpu_load}%\n"
+        f"{disk_indicator} **Disk Free**:     {disk_free}%\n"
+        f"{ts_indicator} **Tailscale**:    {tailscale}\n"
+        f"{ollama_indicator} **Ollama API**:   {ollama}\n"
+        f"🔧 **Containers**:   {containers}\n"
+        f"\n"
+        f"{🟢 All systems nominal. if all([cpu_indicator == 🟢, disk_indicator == 🟢, ts_indicator == 🟢, ollama_indicator == 🟢]) else ⚠️ Attention required.}"
+    )
+

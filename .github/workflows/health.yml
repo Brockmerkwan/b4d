@@ -1,0 +1,39 @@
+name: Health Check
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # every 5 minutes
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tailscale auth
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Check NullCore services
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.NULLCORE_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            nullcore@100.94.94.32 '
+              # Check bot
+              if ! systemctl is-active --quiet b4d-discord; then
+                echo "ALERT: b4d-discord down"
+                exit 1
+              fi
+              # Check Ollama
+              if ! curl -s http://localhost:11434/api/tags > /dev/null; then
+                echo "ALERT: Ollama unreachable"
+                exit 1
+              fi
+              echo "All systems green: $(date)"
+            '
